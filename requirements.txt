@@ -1,0 +1,66 @@
+annotated-types==0.7.0
+brotlicffi @ file:///C:/miniconda3/conda-bld/brotlicffi_1764961370587/work
+certifi @ file:///C:/Users/task_176765900829408/croot/certifi_1767659214946/work/certifi
+cffi @ file:///C:/miniconda3/conda-bld/cffi_1761832792265/work
+charset-normalizer @ file:///C:/miniconda3/conda-bld/charset-normalizer_1761745005832/work
+click==8.3.1
+cloudpickle==3.1.2
+colorama==0.4.6
+-e git+https://github.com/stanford-cs336/assignment2-systems.git@e495ed740080661ab084914674d3e10048778889#egg=cs336_basics&subdirectory=cs336-basics
+einops==0.8.1
+einx==0.4.2
+filelock @ file:///C:/Users/task_176943975530691/croot/filelock_1769440571783/work
+flatbuffers==25.12.19
+frozendict==2.4.7
+fsspec @ file:///C:/Users/task_177399634592883/croot/fsspec_1773996436795/work
+gitdb==4.0.12
+GitPython==3.1.46
+gmpy2 @ file:///C:/miniconda3/conda-bld/gmpy2_1764748103115/work
+idna @ file:///C:/miniconda3/conda-bld/idna_1761912044050/work
+iniconfig==2.3.0
+jaxtyping==0.3.9
+Jinja2 @ file:///C:/b/abs_920kup4e6u/croot/jinja2_1741711580669/work
+MarkupSafe @ file:///C:/b/abs_a0ma7ge0jc/croot/markupsafe_1738584052792/work
+mkl-service==2.4.0
+mkl_fft @ file:///C:/Users/dev-admin/mkl/mkl_fft_1730823082242/work
+mkl_random @ file:///C:/Users/dev-admin/mkl/mkl_random_1730822522280/work
+mpmath @ file:///C:/b/abs_7833jrbiox/croot/mpmath_1690848321154/work
+networkx @ file:///C:/miniconda3/conda-bld/networkx_1765378660274/work
+numpy @ file:///C:/b/abs_c1ywpu18ar/croot/numpy_and_numpy_base_1708638681471/work/dist/numpy-1.26.4-cp311-cp311-win_amd64.whl#sha256=5dfd3e04dc1c2826d3f404fdc7f93c097901f5da9b91f4f394f79d4e038ed81d
+onnxruntime==1.24.4
+packaging @ file:///C:/miniconda3/conda-bld/packaging_1761049096285/work
+pillow @ file:///C:/b/abs_b50vowcrzo/croot/pillow_1738010273782/work
+platformdirs==4.5.1
+pluggy==1.6.0
+protobuf==6.33.3
+psutil==7.2.2
+pycparser @ file:///C:/miniconda3/conda-bld/pycparser_1757496060165/work
+pydantic==2.12.5
+pydantic_core==2.41.5
+Pygments==2.19.2
+PyMuPDF==1.27.2.2
+pymupdf-layout==1.27.2.2
+pymupdf4llm==1.27.2.2
+PySocks @ file:///C:/miniconda3/conda-bld/pysocks_1761753028158/work
+pytest==9.0.2
+PyYAML @ file:///C:/miniconda3/conda-bld/pyyaml_1763465512847/work
+regex==2025.11.3
+requests @ file:///C:/miniconda3/conda-bld/requests_1762359611410/work
+sentry-sdk==2.49.0
+smmap==5.0.2
+submitit==1.5.4
+sympy==1.14.0
+tabulate==0.10.0
+tiktoken==0.12.0
+torch==2.10.0+cu128
+torchaudio==2.2.0
+torchvision==0.25.0+cu128
+tqdm==4.67.3
+typing-inspection==0.4.2
+typing_extensions @ file:///C:/b/abs_ecq8gc0vbm/croot/typing_extensions_1756281142218/work
+urllib3 @ file:///C:/Users/task_176781036847582/croot/urllib3_1767810492638/work
+uv==0.9.24
+wadler_lindig==0.1.7
+wandb==0.23.1
+win_inet_pton @ file:///C:/miniconda3/conda-bld/win_inet_pton_1761746278197/work
+

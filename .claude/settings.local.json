@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(.venv/Scripts/python -c \"from cs336_basics.model import BasicsTransformerLM; print\\(''OK''\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(conda activate:*)",
+      "Bash(conda list:*)",
+      "Bash(conda run:*)"
+    ]
+  }
+}
