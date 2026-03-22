@@ -1,13 +1,39 @@
 import os
 import timeit
 import argparse
+import math
 
 import torch
+import torch.cuda.nvtx as nvtx
 
+import cs336_basics
 from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.optimizer import get_cosine_lr, AdamW
+from cs336_basics.nn_utils import softmax
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def annotated_scaled_dot_product_attention(Q, K, V, mask):
+    '''
+    Replace scaled_dot_product_attention with added nvtx function
+    '''
+    d_k = K.shape[-1]
+    with nvtx.range("computing attention scores"):
+        attention_scores = Q @ K.transpose(-2, -1) / math.sqrt(d_k)
+
+    if mask is not None:
+        attention_scores = torch.where(mask, attention_scores, -math.inf)
+
+    with nvtx.range("computing softmax"):
+        attention_weights = softmax(attention_scores, dim=-1)
+
+    with nvtx.range("computing final matmul"):
+        ret = attention_weights @ V
+
+    return ret
+
+# 函数替换
+cs336_basics.model.scaled_dot_product_attention = annotated_scaled_dot_product_attention
 
 def main(args):
     model = BasicsTransformerLM(
@@ -86,6 +112,6 @@ if __name__ == "__main__":
     # Test time with warmup = 5
     main(args)
 
-    # Test time with warmup = 0
-    args.warmup_steps = 0
-    main(args)
+    # # Test time with warmup = 0
+    # args.warmup_steps = 0
+    # main(args)

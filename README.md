@@ -63,3 +63,17 @@ To submit, run `./test_and_make_submission.sh` . This script will install your
 code's dependencies, run tests, and create a gzipped tarball with the output. We
 should be able to unzip your submitted tarball and run
 `./test_and_make_submission.sh` to verify your test results.
+
+## Result
+
+### 1.1.3
+```bash
+(cs336) C:\Users\Admin\Documents\Codes\assignment2-systems>python cs336_systems\benchmarking_script.py
+== Execution time with warmup steps: 5 ==
+Average of timings over 10 measurement steps: 0.07325374335050583
+Standard deviation of timings over 10 measurement steps: 0.0026353991124778986
+== Execution time with warmup steps: 0 ==
+Average of timings over 10 measurement steps: 0.08247442543506622
+Standard deviation of timings over 10 measurement steps: 0.0067276498302817345
+```
+
