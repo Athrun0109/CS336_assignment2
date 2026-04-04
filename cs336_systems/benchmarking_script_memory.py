@@ -90,7 +90,7 @@ def main(args):
         if i >= args.warmup_steps:
             step_times.append(end_time - start_time)
 
-    torch.cuda.memory._dump_snapshot("memory_snapshot.pickle")
+    torch.cuda.memory._dump_snapshot(f"memory_snapshot_{args.mixed_precision}_{args.forward_only}_ctx{args.context_length}.pickle")
     torch.cuda.memory._record_memory_history(enabled=None)
 
     print(f"== Execution time with warmup steps: {args.warmup_steps} ==")
@@ -135,6 +135,8 @@ if __name__ == "__main__":
     args.num_heads = 32
     # 测试内存占用，只跑一个epoch
     args.num_steps = 1
+
+    args.mixed_precision = 'bf16'
 
     # Test time with warmup = 5
     main(args)
