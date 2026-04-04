@@ -63,12 +63,17 @@ def main(args):
     step_times = []
 
     # train loop
-    for i in range(args.num_steps + args.warmup_steps):
+    for i in range(args.warmup_steps + args.num_steps):
 
         # start timer
         torch.cuda.synchronize()
         start_time = timeit.default_timer()
         # with mixed precision, model forward+loss
+
+        # 测试显存占用情况（跳过warmup阶段）
+        if i == args.warmup_steps:
+            torch.cuda.memory._record_memory_history(max_entries=1000000)
+
         with autocast:
             output_tensor = model.forward(input_tensor)
             # dummy loss function
@@ -84,6 +89,9 @@ def main(args):
 
         if i >= args.warmup_steps:
             step_times.append(end_time - start_time)
+
+    torch.cuda.memory._dump_snapshot("memory_snapshot.pickle")
+    torch.cuda.memory._record_memory_history(enabled=None)
 
     print(f"== Execution time with warmup steps: {args.warmup_steps} ==")
     step_times = torch.tensor(step_times)
@@ -120,6 +128,13 @@ if __name__ == "__main__":
     parser.add_argument('--mixed_precision', type=str, default='none', choices=['none', 'fp16', 'bf16'], help='Autocast precision.')
 
     args = parser.parse_args()
+
+    args.d_model = 2560
+    args.d_ff = 10240
+    args.num_layers = 32
+    args.num_heads = 32
+    # 测试内存占用，只跑一个epoch
+    args.num_steps = 1
 
     # Test time with warmup = 5
     main(args)
