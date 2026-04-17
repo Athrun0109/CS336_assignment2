@@ -7,7 +7,7 @@ from cs336_basics.model import scaled_dot_product_attention
 
 def main():
     for d_model in [16, 32, 64, 128]:
-        for seq_len in [256, 1024, 4096, 8192, 16384]:
+        for seq_len in [256, 1024, 4096, 8192]:
             except_flag = False
             try:
                 K = torch.randn(8, seq_len, d_model, device="cuda", requires_grad=True)
