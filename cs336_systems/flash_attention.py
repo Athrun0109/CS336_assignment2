@@ -64,7 +64,7 @@ def flash_fwd_kernel(
     V_stride_b, V_stride_row, V_stride_dim,
     O_stride_b, O_stride_row, O_stride_dim,
     L_stride_b, L_stride_row,
-    batch_size, Nq, Nk, scaler,
+    Nq, Nk, scaler,
     D: tl.constexpr,
     Bq: tl.constexpr, Bk: tl.constexpr
 ):
@@ -148,3 +148,16 @@ def flash_fwd_kernel(
     # 将Oi、Li写入block_ptr
     tl.store(O_block_ptr, Oi, boundary_check=(0, 1))
     tl.store(L_block_ptr, Li, boundary_check=(0,))
+
+class FlashAttention2Triton(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, Q, K, V, is_causal=False):
+        bz, Nq, D = Q.shape
+        _, Nk, _ = K.shape
+        scaler = 1.0 / D ** 0.5
+        
+        ctx.save_for_backward(Q, K, V)
+        assert Q.is_contiguous() and K.is_contiguous() and V.is_contiguous(), "Our pointer arithmetic will assume contiguous"
+
+        Bq = Bk = 16
+        
