@@ -36,8 +36,7 @@ class FlashAttention2(torch.autograd.Function):
                     mi_new = torch.max(mi, torch.max(Si, dim=-1).values)
                     Pi = torch.exp(Si - mi_new.unsqueeze(-1)) # shape=(Bq, Bk)
                     li = torch.exp(mi - mi_new) * li + torch.sum(Pi, dim=-1)
-                    temp = torch.exp(mi - mi_new) # shape=(Bq,)
-                    Oi = temp.unsqueeze(-1) * Oi + Pi @ Vj # shape=(Bq, d)
+                    Oi = torch.exp(mi - mi_new).unsqueeze(-1) * Oi + Pi @ Vj # shape=(Bq, d)
                     mi = mi_new # 更新mi
                 Oi = Oi / li.unsqueeze(-1) # shape=(Bq, d)
                 Li = mi + torch.log(li) # shape=(Bq,)
@@ -65,7 +64,7 @@ def flash_fwd_kernel(
     V_stride_b, V_stride_row, V_stride_dim,
     O_stride_b, O_stride_row, O_stride_dim,
     L_stride_b, L_stride_row,
-    batch_size, Nq, Nk, 
+    batch_size, Nq, Nk, scaler,
     D: tl.constexpr,
     Bq: tl.constexpr, Bk: tl.constexpr
 ):
@@ -116,7 +115,36 @@ def flash_fwd_kernel(
         block_shape=(Bq,),
         order=(0,),
     )
-
+    # Triton中跨越循环的临时变量需要事先声明
     Oi = tl.zeros((Bq, D), dtype=tl.float32)
     li = tl.zeros((Bq,), dtype=tl.float32)
     mi = tl.full((Bq,), -float('inf'), dtype=tl.float32)
+
+    # 在下面的循环中，Q的指针并不会被移动，所以直接在循环前加载Q
+    Q = tl.load(Q_block_ptr, boundary_check=(0,), padding_option="zero")
+
+    for _ in range(tl.cdiv(Nk, Bk)):
+        Ki = tl.load(K_block_ptr, boundary_check=(0,), padding_option="zero")
+        Vi = tl.load(V_block_ptr, boundary_check=(0,), padding_option="zero")
+        # 计算Q@K的score值
+        Si = tl.dot(Q, tl.trans(Ki)) * scaler
+        # 更新mi的最大值；max用于矩阵内部比较，maximum用于两个矩阵进行比较
+        mi_new = tl.maximum(mi, tl.max(Si, axis=-1)) # shape=(Bq,)
+        Pi = tl.exp(Si - mi_new[..., None]) # shape=(Bq, Bk)
+        # 更新softmax的分母
+        li = tl.exp(mi - mi_new) * li + tl.sum(Pi, axis=-1) # shape=(Bq,)
+        # 更新softmax的分子
+        temp = tl.exp(mi - mi_new) # shape=(Bq,)
+        Oi = temp[..., None] * Oi + tl.dot(Pi, Vi) # shape=(Bq, D)
+        mi = mi_new
+
+        # 移动K, V指针
+        K_block_ptr = tl.advance(K_block_ptr, (Bk, 0))
+        V_block_ptr = tl.advance(V_block_ptr, (Bk, 0))
+    
+    Oi = Oi / li[..., None] # shape=(Bq, D)
+    Li = mi + tl.log(li) # shape=(Bq,)
+
+    # 将Oi、Li写入block_ptr
+    tl.store(O_block_ptr, Oi, boundary_check=(0, 1))
+    tl.store(L_block_ptr, Li, boundary_check=(0,))
