@@ -64,7 +64,7 @@ def flash_fwd_kernel(
     V_stride_b, V_stride_row, V_stride_dim,
     O_stride_b, O_stride_row, O_stride_dim,
     L_stride_b, L_stride_row,
-    Nq, Nk, scaler,
+    Nq, Nk, scale,
     D: tl.constexpr,
     Bq: tl.constexpr, Bk: tl.constexpr
 ):
@@ -74,6 +74,8 @@ def flash_fwd_kernel(
 
     Q_base = batch_idx * Q_stride_b
     K_base = batch_idx * K_stride_b
+    V_base = batch_idx * V_stride_b
+    O_base = batch_idx * O_stride_b
     L_base = batch_idx * L_stride_b
     Q_block_ptr = tl.make_block_ptr(
         Q_ptr + Q_base, # 当前grid的指针开始的物理位置
@@ -92,7 +94,7 @@ def flash_fwd_kernel(
         order=(1, 0),
     )
     V_block_ptr = tl.make_block_ptr(
-        V_ptr + K_base,
+        V_ptr + V_base,
         shape=(Nk, D),
         strides=(V_stride_row, V_stride_dim),
         offsets=(0, 0),
@@ -100,7 +102,7 @@ def flash_fwd_kernel(
         order=(1, 0),
     )
     O_block_ptr = tl.make_block_ptr(
-        O_ptr + Q_base,
+        O_ptr + O_base,
         shape=(Nq, D),
         strides=(O_stride_row, O_stride_dim),
         offsets=(Q_tile_idx * Bq, 0),
@@ -127,7 +129,7 @@ def flash_fwd_kernel(
         Ki = tl.load(K_block_ptr, boundary_check=(0,), padding_option="zero")
         Vi = tl.load(V_block_ptr, boundary_check=(0,), padding_option="zero")
         # 计算Q@K的score值
-        Si = tl.dot(Q, tl.trans(Ki)) * scaler
+        Si = tl.dot(Q, tl.trans(Ki)) * scale
         # 更新mi的最大值；max用于矩阵内部比较，maximum用于两个矩阵进行比较
         mi_new = tl.maximum(mi, tl.max(Si, axis=-1)) # shape=(Bq,)
         Pi = tl.exp(Si - mi_new[..., None]) # shape=(Bq, Bk)
@@ -135,7 +137,8 @@ def flash_fwd_kernel(
         li = tl.exp(mi - mi_new) * li + tl.sum(Pi, axis=-1) # shape=(Bq,)
         # 更新softmax的分子
         temp = tl.exp(mi - mi_new) # shape=(Bq,)
-        Oi = temp[..., None] * Oi + tl.dot(Pi, Vi) # shape=(Bq, D)
+        # 作业建议使用tl.dot(acc=)参数完成累加操作
+        Oi = tl.dot(Pi.to(Vi.dtype), Vi, acc=temp[..., None]*Oi)
         mi = mi_new
 
         # 移动K, V指针
@@ -145,8 +148,8 @@ def flash_fwd_kernel(
     Oi = Oi / li[..., None] # shape=(Bq, D)
     Li = mi + tl.log(li) # shape=(Bq,)
 
-    # 将Oi、Li写入block_ptr
-    tl.store(O_block_ptr, Oi, boundary_check=(0, 1))
+    # 将Oi、Li写入block_ptr；要求中有提到"cast Oi to the appropriate dtype before writing it to global memory"
+    tl.store(O_block_ptr, Oi.to(O_block_ptr.type.element_ty), boundary_check=(0, 1))
     tl.store(L_block_ptr, Li, boundary_check=(0,))
 
 class FlashAttention2Triton(torch.autograd.Function):
@@ -154,10 +157,32 @@ class FlashAttention2Triton(torch.autograd.Function):
     def forward(ctx, Q, K, V, is_causal=False):
         bz, Nq, D = Q.shape
         _, Nk, _ = K.shape
-        scaler = 1.0 / D ** 0.5
+        scale = 1.0 / D ** 0.5
         
-        ctx.save_for_backward(Q, K, V)
+        assert Q.is_cuda and K.is_cuda and V.is_cuda, "Expected CUDA tensors."
         assert Q.is_contiguous() and K.is_contiguous() and V.is_contiguous(), "Our pointer arithmetic will assume contiguous"
 
-        Bq = Bk = 16
+        ctx.D = D
+        ctx.Bq = ctx.Bk = 16
+        ctx.is_causal = is_causal
         
+        # 初始化O和L的empty tensor
+        O = torch.empty_like(Q)
+        L = torch.empty((bz, Nq), dtype=torch.float32, device=Q.device)
+        
+        grid = ((Nq + ctx.Bq - 1)//ctx.Bq, bz) # 数学上的向上取整
+        flash_fwd_kernel[grid](
+            Q, K, V, O, L,
+            *Q.stride(),
+            *K.stride(),
+            *V.stride(),
+            *O.stride(),
+            *L.stride(),
+            Nq, Nk, scale,
+            ctx.D,
+            ctx.Bq, ctx.Bk
+        )
+
+        ctx.save_for_backward(L, Q, K, V, O)
+
+        return O
