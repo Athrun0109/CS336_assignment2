@@ -66,7 +66,8 @@ def flash_fwd_kernel(
     L_stride_b, L_stride_row,
     Nq, Nk, scale,
     D: tl.constexpr,
-    Bq: tl.constexpr, Bk: tl.constexpr
+    Bq: tl.constexpr, Bk: tl.constexpr,
+    is_causal: tl.constexpr
 ):
     # 注意：下面给出的不是i、j，而是以tile_size为单位的第x th个
     Q_tile_idx = tl.program_id(0)
@@ -125,11 +126,17 @@ def flash_fwd_kernel(
     # 在下面的循环中，Q的指针并不会被移动，所以直接在循环前加载Q
     Q = tl.load(Q_block_ptr, boundary_check=(0,), padding_option="zero")
 
-    for _ in range(tl.cdiv(Nk, Bk)):
+    for i in range(tl.cdiv(Nk, Bk)):
         Ki = tl.load(K_block_ptr, boundary_check=(0,), padding_option="zero")
         Vi = tl.load(V_block_ptr, boundary_check=(0,), padding_option="zero")
         # 计算Q@K的score值
         Si = tl.dot(Q, tl.trans(Ki)) * scale
+        # casual_mask
+        if is_causal:
+            Q_mask = Q_tile_idx * Bq + tl.arange(0, Bq) # shape=(Bq,)
+            K_mask = i * Bk + tl.arange(0, Bk) # shape=(Bk,)
+            causal_mask = Q_mask[..., None] >= K_mask[None, ...] # shape=(Bq, Bk)
+            Si = tl.where(causal_mask, Si, -1e6)
         # 更新mi的最大值；max用于矩阵内部比较，maximum用于两个矩阵进行比较
         mi_new = tl.maximum(mi, tl.max(Si, axis=-1)) # shape=(Bq,)
         Pi = tl.exp(Si - mi_new[..., None]) # shape=(Bq, Bk)
@@ -138,7 +145,8 @@ def flash_fwd_kernel(
         # 更新softmax的分子
         temp = tl.exp(mi - mi_new) # shape=(Bq,)
         # 作业建议使用tl.dot(acc=)参数完成累加操作
-        Oi = tl.dot(Pi.to(Vi.dtype), Vi, acc=temp[..., None]*Oi)
+        Oi = temp * Oi
+        Oi = tl.dot(Pi.to(Vi.dtype), Vi, acc=Oi)
         mi = mi_new
 
         # 移动K, V指针
@@ -180,7 +188,8 @@ class FlashAttention2Triton(torch.autograd.Function):
             *L.stride(),
             Nq, Nk, scale,
             ctx.D,
-            ctx.Bq, ctx.Bk
+            ctx.Bq, ctx.Bk,
+            ctx.is_causal
         )
 
         ctx.save_for_backward(L, Q, K, V, O)
