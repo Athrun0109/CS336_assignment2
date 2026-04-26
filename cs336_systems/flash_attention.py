@@ -25,12 +25,20 @@ class FlashAttention2(torch.autograd.Function):
                 Qi = Q[b, start:end, :]
                 Oi = torch.zeros((end-start, d), dtype=torch.float32, device=Q.device)
                 li = torch.zeros((end-start,), dtype=torch.float32, device=Q.device)
-                mi = torch.full((end-start,), -math.inf, dtype=torch.float32, device=Q.device)
+                mi = torch.full((end-start,), -1e6, dtype=torch.float32, device=Q.device)
                 for j in range(Tk):
                     idx = Bk * j
                     Kj = K[b, idx:idx+Bk, :]
                     Vj = V[b, idx:idx+Bk, :]
                     Si = Qi @ Kj.T / math.sqrt(d) # shape=(Bq, Bk)
+                    # causal_mask
+                    if is_causal:
+                        Q_mask_base = i * Bq
+                        Q_mask = Q_mask_base + torch.arange(math.min(Bq, Nq - Q_mask_base), device=Si.device)
+                        K_mask_base = j * Bk
+                        K_mask = K_mask_base + torch.arange(math.min(Bk, Nk - K_mask_base), device=Si.device)
+                        causal_mask_reverse = Q_mask[..., None] < K_mask[None, ...]
+                        Si = Si.masked_fill(causal_mask_reverse, -1e6)
                     # 计算到当前位置Si每行的最大值
                     # 关于torch.max，输入dim参数后会返回values、indices这两项内容；如果不加dim参数，就返回单一最大值的tensor。
                     mi_new = torch.max(mi, torch.max(Si, dim=-1).values)
@@ -52,9 +60,30 @@ class FlashAttention2(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_out):
-        pass
-        raise NotImplementedError("Backward pass is not required currently.")
-    
+        '''
+        grad_out.shape = (batch_size, Nq, d)
+        '''
+        L, Q, K, V, O = ctx.saved_tensors
+        d = Q.shape[-1]
+        scale = 1 / math.sqrt(d)
+        S = Q @ K.transpose(-1, -2) * scale # shape=(batch_size, Nq, Nk)
+        if ctx.is_causal:
+            Nq, Nk = S.shape[-2:]
+            Q_mask = torch.arange(Nq, device=S.device)
+            K_mask = torch.aragne(Nk, device=S.device)
+            causal_mask_reverse = Q_mask[..., None] < K_mask[None, ...] # shape=(Nq, Nk)
+            S = S.masked_fill(causal_mask_reverse, -1e6)
+        P = torch.exp(S - L.unsqueeze(-1)) # shape=(batch_size, Nq, Nk)
+        dV = P.transpose(-1, -2) @ grad_out # shape=(batch_size, Nk, d)
+        dP = grad_out @ V.transpose(-1, -2) # shape=(batch_size, Nq, Nk)
+        # 注意这里是逐元素相乘，而不是矩阵乘法：rowsum(P ◦ dP)
+        D = torch.sum(P * dP, dim=-1, keepdim=True) # shape=(batch_size, Nq, 1)
+        temp = dP - D # shape=(batch_size, Nq, Nk)
+        dS = P * temp # shape=(batch_size, Nq, Nk)
+        dQ = dS @ K * scale # shape=(batch_size, Nq, d)
+        dK = dS.transpose(-1, -2) @ Q * scale # shape=(batch_size, Nk, d)
+
+        return dQ, dK, dV, None
 
 @triton.jit
 def flash_fwd_kernel(
