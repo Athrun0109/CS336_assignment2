@@ -82,8 +82,4 @@ Standard deviation of timings over 10 measurement steps: 0.0067276498302817345
 
 - [flash_attention.py](cs336_systems/flash_attention.py) 
 
-```bash
-# FlashAttention-2 Forward Pass
-pytest tests/ -k flash_forward_pass_pytorch
-```
-
+![flash_attention1](flash_attention1.png)

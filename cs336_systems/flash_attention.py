@@ -4,6 +4,33 @@ import torch
 import triton
 import triton.language as tl
 
+def _flash_backward_pytorch(L, Q, K, V, grad_out, is_causal=False):
+    '''
+    grad_out.shape = (batch_size, Nq, d)
+    '''
+    d = Q.shape[-1]
+    scale = 1 / math.sqrt(d)
+    S = Q @ K.transpose(-1, -2) * scale # shape=(batch_size, Nq, Nk)
+    if is_causal:
+        Nq, Nk = S.shape[-2:]
+        Q_mask = torch.arange(Nq, device=S.device)
+        K_mask = torch.arange(Nk, device=S.device)
+        causal_mask_reverse = Q_mask[..., None] < K_mask[None, ...] # shape=(Nq, Nk)
+        S = S.masked_fill(causal_mask_reverse, -1e6)
+    P = torch.exp(S - L.unsqueeze(-1)) # shape=(batch_size, Nq, Nk)
+    dV = P.transpose(-1, -2) @ grad_out # shape=(batch_size, Nk, d)
+    dP = grad_out @ V.transpose(-1, -2) # shape=(batch_size, Nq, Nk)
+    # 注意这里是逐元素相乘，而不是矩阵乘法：rowsum(P ◦ dP)
+    D = torch.sum(P * dP, dim=-1, keepdim=True) # shape=(batch_size, Nq, 1)
+    temp = dP - D # shape=(batch_size, Nq, Nk)
+    dS = P * temp # shape=(batch_size, Nq, Nk)
+    dQ = dS @ K * scale # shape=(batch_size, Nq, d)
+    dK = dS.transpose(-1, -2) @ Q * scale # shape=(batch_size, Nk, d)
+
+    return dQ, dK, dV
+
+compiled_backward_pytorch = torch.compile(_flash_backward_pytorch)
+
 class FlashAttention2(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, K, V, is_causal=False):
@@ -34,9 +61,9 @@ class FlashAttention2(torch.autograd.Function):
                     # causal_mask
                     if is_causal:
                         Q_mask_base = i * Bq
-                        Q_mask = Q_mask_base + torch.arange(math.min(Bq, Nq - Q_mask_base), device=Si.device)
+                        Q_mask = Q_mask_base + torch.arange(min(Bq, Nq - Q_mask_base), device=Si.device)
                         K_mask_base = j * Bk
-                        K_mask = K_mask_base + torch.arange(math.min(Bk, Nk - K_mask_base), device=Si.device)
+                        K_mask = K_mask_base + torch.arange(min(Bk, Nk - K_mask_base), device=Si.device)
                         causal_mask_reverse = Q_mask[..., None] < K_mask[None, ...]
                         Si = Si.masked_fill(causal_mask_reverse, -1e6)
                     # 计算到当前位置Si每行的最大值
@@ -53,7 +80,7 @@ class FlashAttention2(torch.autograd.Function):
                 L[b, start:end] = Li
             
         # 保存变量用于反向传播
-        ctx.save_for_backward(L, Q, K, V, O)
+        ctx.save_for_backward(L, Q, K, V)
         ctx.is_causal = is_causal
 
         return O
@@ -63,26 +90,8 @@ class FlashAttention2(torch.autograd.Function):
         '''
         grad_out.shape = (batch_size, Nq, d)
         '''
-        L, Q, K, V, O = ctx.saved_tensors
-        d = Q.shape[-1]
-        scale = 1 / math.sqrt(d)
-        S = Q @ K.transpose(-1, -2) * scale # shape=(batch_size, Nq, Nk)
-        if ctx.is_causal:
-            Nq, Nk = S.shape[-2:]
-            Q_mask = torch.arange(Nq, device=S.device)
-            K_mask = torch.aragne(Nk, device=S.device)
-            causal_mask_reverse = Q_mask[..., None] < K_mask[None, ...] # shape=(Nq, Nk)
-            S = S.masked_fill(causal_mask_reverse, -1e6)
-        P = torch.exp(S - L.unsqueeze(-1)) # shape=(batch_size, Nq, Nk)
-        dV = P.transpose(-1, -2) @ grad_out # shape=(batch_size, Nk, d)
-        dP = grad_out @ V.transpose(-1, -2) # shape=(batch_size, Nq, Nk)
-        # 注意这里是逐元素相乘，而不是矩阵乘法：rowsum(P ◦ dP)
-        D = torch.sum(P * dP, dim=-1, keepdim=True) # shape=(batch_size, Nq, 1)
-        temp = dP - D # shape=(batch_size, Nq, Nk)
-        dS = P * temp # shape=(batch_size, Nq, Nk)
-        dQ = dS @ K * scale # shape=(batch_size, Nq, d)
-        dK = dS.transpose(-1, -2) @ Q * scale # shape=(batch_size, Nk, d)
-
+        L, Q, K, V = ctx.saved_tensors
+        dQ, dK, dV = compiled_backward_pytorch(L, Q, K, V, grad_out, ctx.is_causal)
         return dQ, dK, dV, None
 
 @triton.jit
@@ -159,30 +168,30 @@ def flash_fwd_kernel(
         Ki = tl.load(K_block_ptr, boundary_check=(0,), padding_option="zero")
         Vi = tl.load(V_block_ptr, boundary_check=(0,), padding_option="zero")
         # 计算Q@K的score值
-        Si = tl.dot(Q, tl.trans(Ki)) * scale
+        Si = tl.dot(Q, tl.trans(Ki)) * scale # shape=(Bq, Bk)
         # casual_mask
         if is_causal:
             Q_mask = Q_tile_idx * Bq + tl.arange(0, Bq) # shape=(Bq,)
             K_mask = i * Bk + tl.arange(0, Bk) # shape=(Bk,)
-            causal_mask = Q_mask[..., None] >= K_mask[None, ...] # shape=(Bq, Bk)
+            causal_mask = Q_mask[:, None] >= K_mask[None, :] # shape=(Bq, Bk)
             Si = tl.where(causal_mask, Si, -1e6)
         # 更新mi的最大值；max用于矩阵内部比较，maximum用于两个矩阵进行比较
         mi_new = tl.maximum(mi, tl.max(Si, axis=-1)) # shape=(Bq,)
-        Pi = tl.exp(Si - mi_new[..., None]) # shape=(Bq, Bk)
+        Pi = tl.exp(Si - mi_new[:, None]) # shape=(Bq, Bk)
         # 更新softmax的分母
         li = tl.exp(mi - mi_new) * li + tl.sum(Pi, axis=-1) # shape=(Bq,)
         # 更新softmax的分子
         temp = tl.exp(mi - mi_new) # shape=(Bq,)
         # 作业建议使用tl.dot(acc=)参数完成累加操作
-        Oi = temp * Oi
-        Oi = tl.dot(Pi.to(Vi.dtype), Vi, acc=Oi)
+        Oi = temp[:, None] * Oi # shape=(Bq, D)
+        Oi = tl.dot(Pi.to(Vi.dtype), Vi, acc=Oi) # shape=(Bq, D)
         mi = mi_new
 
         # 移动K, V指针
         K_block_ptr = tl.advance(K_block_ptr, (Bk, 0))
         V_block_ptr = tl.advance(V_block_ptr, (Bk, 0))
     
-    Oi = Oi / li[..., None] # shape=(Bq, D)
+    Oi = Oi / li[:, None] # shape=(Bq, D)
     Li = mi + tl.log(li) # shape=(Bq,)
 
     # 将Oi、Li写入block_ptr；要求中有提到"cast Oi to the appropriate dtype before writing it to global memory"
@@ -221,6 +230,15 @@ class FlashAttention2Triton(torch.autograd.Function):
             ctx.is_causal
         )
 
-        ctx.save_for_backward(L, Q, K, V, O)
+        ctx.save_for_backward(L, Q, K, V)
 
         return O
+    
+    @staticmethod
+    def backward(ctx, grad_out):
+        '''
+        grad_out.shape = (batch_size, Nq, d)
+        '''
+        L, Q, K, V = ctx.saved_tensors
+        dQ, dK, dV = compiled_backward_pytorch(L, Q, K, V, grad_out, ctx.is_causal)
+        return dQ, dK, dV, None
