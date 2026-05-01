@@ -83,3 +83,8 @@ Standard deviation of timings over 10 measurement steps: 0.0067276498302817345
 - [flash_attention.py](cs336_systems/flash_attention.py) 
 
 ![flash_attention1](flash_attention1.png)
+
+### 2.1.1 Best Practices for Benchmarking Distributed Applications
+
+-  [distributed_communication_single_node.py](cs336_systems/distributed_communication_single_node.py) 
+
